@@ -112,7 +112,7 @@ def get_cached_forecast(
 ) -> Dict[str, Any]:
     client = get_supabase_client()
 
-    query = client.table("weather_forecasts").select("*").eq("city", city.lower())
+    query = client.table("weather_forecasts").select("*").ilike("city", city)
 
     if language:
         query = query.eq("text_language", language)
@@ -143,7 +143,7 @@ def list_forecasts(
     )
 
     if city:
-        query = query.eq("city", city.lower())
+        query = query.ilike("city", city)
     if language:
         query = query.eq("text_language", language)
     if not include_expired:
