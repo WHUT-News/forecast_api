@@ -62,6 +62,10 @@ class HistoryResponse(BaseModel):
     forecasts: List[ForecastSummary]
 
 
+class CityDetail(BaseModel):
+    image_url: Optional[str] = None
+
+
 class StorageStatistics(BaseModel):
     total_forecasts: int
     total_text_bytes: int
@@ -72,6 +76,7 @@ class StorageStatistics(BaseModel):
     expired_forecasts: int
     cities_used: Dict[str, int]
     languages_used: Dict[str, int]
+    active_cities: Dict[str, CityDetail] = {}
 
 
 class StatsResponse(BaseModel):

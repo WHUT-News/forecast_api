@@ -39,7 +39,8 @@ async def get_stats():
                 "forecasts_with_images": result["forecasts_with_images"],
                 "expired_forecasts": result["expired_forecasts"],
                 "cities_used": result["cities_used"],
-                "languages_used": result["languages_used"]
+                "languages_used": result["languages_used"],
+                "active_cities": result["active_cities"],
             }
         }
     except DatabaseConnectionError:

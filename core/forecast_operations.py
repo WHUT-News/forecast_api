@@ -176,6 +176,35 @@ def list_forecasts(
     return {"status": "success", "forecasts": forecasts}
 
 
+def _get_active_city_details(client) -> Dict[str, Any]:
+    """Return a dict of cities that have at least one non-expired forecast,
+    with the image_url from their most-recent active record."""
+    try:
+        result = client.table("weather_forecasts").select(
+            "city, image_url, expires_at"
+        ).execute()
+
+        now = datetime.now(timezone.utc)
+        city_data: Dict[str, Dict] = {}
+
+        for r in result.data or []:
+            city = r.get("city")
+            if not city:
+                continue
+            exp = _parse_timestamp(r.get("expires_at"))
+            is_active = not (exp and now > exp)
+            if not is_active:
+                continue
+            if city not in city_data:
+                city_data[city] = {"image_url": None}
+            if r.get("image_url"):
+                city_data[city]["image_url"] = r["image_url"]
+
+        return city_data
+    except Exception:
+        return {}
+
+
 def get_storage_stats() -> Dict[str, Any]:
     client = get_supabase_client()
 
@@ -193,7 +222,8 @@ def get_storage_stats() -> Dict[str, Any]:
                 "forecasts_with_images": int(data.get("forecasts_with_images", 0)),
                 "expired_forecasts": int(data.get("expired_forecasts", 0)),
                 "cities_used": data.get("cities_used", {}) or {},
-                "languages_used": data.get("languages_used", {}) or {}
+                "languages_used": data.get("languages_used", {}) or {},
+                "active_cities": _get_active_city_details(client),
             }
     except Exception:
         pass
@@ -216,11 +246,12 @@ def get_storage_stats() -> Dict[str, Any]:
                 "forecasts_with_images": 0,
                 "expired_forecasts": 0,
                 "cities_used": {},
-                "languages_used": {}
+                "languages_used": {},
+                "active_cities": {},
             }
 
         now = datetime.now(timezone.utc)
-        stats = {
+        stats: Dict[str, Any] = {
             "total_forecasts": len(records),
             "total_text_bytes": sum(r.get("text_size_bytes") or 0 for r in records),
             "total_audio_bytes": sum(r.get("audio_size_bytes") or 0 for r in records),
@@ -229,18 +260,24 @@ def get_storage_stats() -> Dict[str, Any]:
             "forecasts_with_images": sum(1 for r in records if r.get("image_url")),
             "expired_forecasts": 0,
             "cities_used": {},
-            "languages_used": {}
+            "languages_used": {},
+            "active_cities": {},
         }
 
         for record in records:
-            if record.get("expires_at"):
-                exp = _parse_timestamp(record.get("expires_at"))
-                if exp and now > exp:
-                    stats["expired_forecasts"] += 1
+            exp = _parse_timestamp(record.get("expires_at"))
+            is_expired = bool(exp and now > exp)
+            if is_expired:
+                stats["expired_forecasts"] += 1
 
             city = record.get("city")
             if city:
                 stats["cities_used"][city] = stats["cities_used"].get(city, 0) + 1
+                if not is_expired:
+                    if city not in stats["active_cities"]:
+                        stats["active_cities"][city] = {"image_url": None}
+                    if record.get("image_url"):
+                        stats["active_cities"][city]["image_url"] = record["image_url"]
 
             language = record.get("text_language")
             if language:

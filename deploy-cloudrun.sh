@@ -18,8 +18,8 @@ TIMEOUT="${TIMEOUT:-300}"
 IMAGE_PATH="gcr.io/${PROJECT_ID}/${SERVICE_NAME}:${TAG}"
 
 # Default environment variables (can be overridden by user)
-# SUPABASE_URL=https://isbghrypaabamnrpumce.supabase.co
-# WEATHER_AGENT_URL=https://weather-agent-951067725786.us-central1.run.app
+SUPABASE_URL=https://isbghrypaabamnrpumce.supabase.co
+WEATHER_AGENT_URL=https://weather-agent-951067725786.us-central1.run.app
 
 # Required environment variables
 if [ -z "${SUPABASE_URL}" ]; then
