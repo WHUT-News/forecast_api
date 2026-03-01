@@ -1,413 +1,251 @@
 """
-Forecast storage operations for Cloud SQL.
-
-Provides CRUD operations for weather forecasts with binary storage.
+Forecast operations for Supabase.
 """
-
 import base64
-from datetime import datetime, timedelta
-from typing import Optional, Dict, Any, List
-from .connection import get_connection
-from .encoding import encode_text, decode_text, detect_optimal_encoding
+from datetime import datetime, timezone
+from typing import Optional, List, Dict, Any
+
+from .connection import get_supabase_client
+from .encoding import decode_text
 
 
-def upload_forecast(
-    city: str,
-    forecast_text: str,
-    audio_data: str,
-    forecast_at: str,
-    ttl_minutes: int = 30,
-    encoding: Optional[str] = None,
-    language: Optional[str] = None,
-    locale: Optional[str] = None
-) -> Dict[str, Any]:
-    """
-    Upload a complete forecast (text + audio) to Cloud SQL.
+def _parse_timestamp(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
-    Args:
-        city: City name (e.g., 'chicago')
-        forecast_text: Generated forecast text content
-        audio_data: Base64-encoded audio WAV data
-        forecast_at: when was the forecast made. ISO 8601 timestamp (e.g., '2025-12-26T15:00:00Z')
-        ttl_minutes: Time-to-live in minutes (default: 30)
-        encoding: Text encoding (auto-detect if None)
-        language: ISO 639-1 language code (e.g., 'en', 'es', 'ja')
-        locale: Full locale (e.g., 'en-US', 'es-MX', 'ja-JP')
 
-    Returns:
-        Dictionary with upload status and metadata
-    """
-    # Auto-detect optimal encoding if not specified
-    if encoding is None:
-        encoding = detect_optimal_encoding(forecast_text)
+def _decode_bytea(value: Optional[str], encoding: str) -> Optional[str]:
+    if value is None:
+        return None
 
-    # Encode forecast text
-    try:
-        text_bytes, text_size, encoding_used = encode_text(forecast_text, encoding)
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": f"Failed to encode text: {e}"
-        }
+    if isinstance(value, bytes):
+        return decode_text(value, encoding)
 
-    # Decode base64 audio data
-    try:
-        audio_bytes = base64.b64decode(audio_data)
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": f"Failed to decode audio data: {e}"
-        }
+    if isinstance(value, str):
+        text = value
+        if text.startswith("\\x") or text.startswith("0x"):
+            try:
+                raw = bytes.fromhex(text[2:])
+                return decode_text(raw, encoding)
+            except Exception:
+                return text
 
-    # Parse forecast_at timestamp
-    try:
-        forecast_time = datetime.fromisoformat(forecast_at.replace('Z', '+00:00'))
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": f"Invalid forecast_at timestamp format: {e}"
-        }
+        try:
+            padding = (4 - len(text) % 4) % 4
+            raw = base64.b64decode(text + "=" * padding)
+            return decode_text(raw, encoding)
+        except Exception:
+            return text
 
-    expires_at = forecast_time + timedelta(minutes=ttl_minutes)
+    return str(value)
 
-    # Prepare metadata
-    metadata = {
-        'ttl_minutes': ttl_minutes,
-        'character_count': len(forecast_text),
-        'encoding_used': encoding_used
+
+def _parse_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    encoding = record.get("text_encoding") or "utf-8"
+    content = _decode_bytea(record.get("forecast_text"), encoding) or ""
+
+    created_at = record.get("created_at") or record.get("forecast_at")
+    created_dt = _parse_timestamp(created_at)
+    age_seconds = 0
+    if created_dt:
+        age_seconds = int((datetime.now(timezone.utc) - created_dt).total_seconds())
+
+    is_expired = False
+    if record.get("expires_at"):
+        expires_dt = _parse_timestamp(record.get("expires_at"))
+        if expires_dt:
+            is_expired = datetime.now(timezone.utc) > expires_dt
+
+    return {
+        "id": record.get("id"),
+        "city": record.get("city"),
+        "content": content,
+        "forecast_at": record.get("forecast_at"),
+        "created_at": record.get("created_at") or record.get("forecast_at"),
+        "expires_at": record.get("expires_at"),
+        "is_expired": is_expired,
+        "age_seconds": age_seconds,
+        "audio_url": record.get("audio_url"),
+        "audio_format": record.get("audio_format"),
+        "audio_size_bytes": record.get("audio_size_bytes"),
+        "image_url": record.get("image_url"),
+        "image_format": record.get("image_format"),
+        "image_size_bytes": record.get("image_size_bytes"),
+        "metadata": {
+            "encoding": encoding,
+            "language": record.get("text_language"),
+            "locale": record.get("text_locale"),
+            "sizes": {
+                "text": record.get("text_size_bytes"),
+                "audio": record.get("audio_size_bytes"),
+                "image": record.get("image_size_bytes")
+            }
+        },
+        "record_metadata": record.get("metadata", {}) or {}
     }
 
-    # Insert into database
-    conn = get_connection()
-    cursor = conn.cursor()
 
-    try:
-        cursor.execute("""
-            INSERT INTO forecasts (
-                city, forecast_at, expires_at,
-                forecast_text, audio_file,
-                text_size_bytes, audio_size_bytes,
-                text_encoding, text_language, text_locale,
-                audio_format, audio_language,
-                metadata
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            RETURNING id, created_at
-        """, (
-            city.lower(),
-            forecast_time,
-            expires_at,
-            text_bytes,
-            audio_bytes,
-            text_size,
-            len(audio_bytes),
-            encoding_used,
-            language,
-            locale,
-            'wav',
-            language,
-            metadata
-        ))
+def get_forecast_by_id(forecast_id: str) -> Dict[str, Any]:
+    client = get_supabase_client()
 
-        result = cursor.fetchone()
-        conn.commit()
+    result = (
+        client.table("weather_forecasts")
+        .select("*")
+        .eq("id", forecast_id)
+        .limit(1)
+        .execute()
+    )
 
-        # RETURNING id, created_at -> result[0]=id, result[1]=created_at
-        return {
-            "status": "success",
-            "forecast_id": str(result[0]),
-            "created_at": result[1].isoformat(),
-            "encoding": encoding_used,
-            "language": language,
-            "locale": locale,
-            "sizes": {
-                "text": text_size,
-                "audio": len(audio_bytes),
-                "total": text_size + len(audio_bytes)
-            }
-        }
+    if not result.data:
+        return {"found": False}
 
-    except Exception as e:
-        conn.rollback()
-        return {
-            "status": "error",
-            "message": f"Database error: {e}"
-        }
-    finally:
-        cursor.close()
-        conn.close()
+    return {"found": True, "forecast": _parse_record(result.data[0])}
 
 
 def get_cached_forecast(
     city: str,
-    language: Optional[str] = None
+    language: Optional[str] = None,
+    include_expired: bool = False
 ) -> Dict[str, Any]:
-    """
-    Retrieve cached forecast from Cloud SQL if available.
+    client = get_supabase_client()
 
-    Args:
-        city: City name to query
-        language: Optional language filter (e.g., 'en', 'es', 'ja')
+    query = client.table("weather_forecasts").select("*").eq("city", city.lower())
 
-    Returns:
-        Dictionary with cached forecast or cached=False if not found
-    """
-    conn = get_connection()
-    cursor = conn.cursor()
+    if language:
+        query = query.eq("text_language", language)
+    if not include_expired:
+        query = query.or_("expires_at.is.null,expires_at.gt.now()")
 
-    try:
-        # Build query with optional language filter
-        query = """
-            SELECT
-                id, forecast_text, audio_file, forecast_at,
-                expires_at, text_size_bytes, audio_size_bytes,
-                text_encoding, text_language, text_locale,
-                created_at, metadata, picture_url
-            FROM forecasts
-            WHERE city = %s
-              AND expires_at > NOW()
-        """
-        params = [city.lower()]
+    query = query.order("forecast_at", desc=True).limit(1)
+    result = query.execute()
 
-        if language:
-            query += " AND text_language = %s"
-            params.append(language)
+    if not result.data:
+        return {"found": False}
 
-        query += " ORDER BY forecast_at DESC LIMIT 1"
-
-        cursor.execute(query, params)
-        result = cursor.fetchone()
-
-        if result:
-            # Query columns: id, forecast_text, audio_file, forecast_at, expires_at,
-            #               text_size_bytes, audio_size_bytes, text_encoding, text_language,
-            #               text_locale, created_at, metadata, picture_url
-            # Indices:      0,  1,             2,          3,           4,
-            #               5,               6,                7,             8,
-            #               9,          10,         11,       12
-
-            # Decode text
-            try:
-                forecast_text = decode_text(
-                    bytes(result[1]),  # forecast_text
-                    encoding=result[7]  # text_encoding
-                )
-            except Exception as e:
-                return {
-                    "status": "error",
-                    "message": f"Failed to decode text: {e}"
-                }
-
-            # Calculate age
-            age_seconds = (datetime.now(result[3].tzinfo) - result[3]).total_seconds()  # forecast_at
-
-            return {
-                "cached": True,
-                "forecast_text": forecast_text,
-                "audio_data": base64.b64encode(bytes(result[2])).decode('utf-8'),  # audio_file
-                "picture_url": result[12],  # picture_url
-                "forecast_at": result[3].isoformat(),  # forecast_at
-                "expires_at": result[4].isoformat(),  # expires_at
-                "age_seconds": int(age_seconds),
-                "encoding": result[7],  # text_encoding
-                "language": result[8],  # text_language
-                "locale": result[9],  # text_locale
-                "sizes": {
-                    "text": result[5],  # text_size_bytes
-                    "audio": result[6]  # audio_size_bytes
-                },
-                "metadata": result[11]  # metadata
-            }
-
-        return {"cached": False}
-
-    except Exception as e:
-        return {
-            "status": "error",
-            "cached": False,
-            "message": f"Database error: {e}"
-        }
-    finally:
-        cursor.close()
-        conn.close()
-
-
-def cleanup_expired_forecasts() -> Dict[str, Any]:
-    """
-    Remove expired forecasts from database.
-
-    Returns:
-        Dictionary with cleanup statistics
-    """
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    try:
-        # Call the cleanup function
-        cursor.execute("SELECT cleanup_expired_forecasts()")
-        deleted_count = cursor.fetchone()[0]  # Returns single column
-
-        # Get remaining count
-        cursor.execute("SELECT COUNT(*) FROM forecasts")
-        remaining_count = cursor.fetchone()[0]  # Returns single column
-
-        conn.commit()
-
-        return {
-            "status": "success",
-            "deleted_count": deleted_count,
-            "remaining_count": remaining_count
-        }
-
-    except Exception as e:
-        conn.rollback()
-        return {
-            "status": "error",
-            "message": f"Cleanup failed: {e}"
-        }
-    finally:
-        cursor.close()
-        conn.close()
-
-
-def get_storage_stats() -> Dict[str, Any]:
-    """
-    Get database storage statistics.
-
-    Returns:
-        Dictionary with storage statistics
-    """
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    try:
-        # Get aggregate statistics
-        cursor.execute("SELECT * FROM get_storage_stats()")
-        stats = cursor.fetchone()
-
-        # Function returns: total_forecasts, total_text_bytes, total_audio_bytes,
-        #                  encodings_used, languages_used
-        # Indices:         0,              1,                2,
-        #                  3,              4
-
-        # Get per-city breakdown
-        cursor.execute("""
-            SELECT
-                city,
-                COUNT(*) as forecast_count,
-                SUM(text_size_bytes) as total_text_bytes,
-                SUM(audio_size_bytes) as total_audio_bytes,
-                MAX(forecast_at) as latest_forecast
-            FROM forecasts
-            WHERE expires_at > NOW()
-            GROUP BY city
-            ORDER BY forecast_count DESC
-        """)
-
-        # Query columns: city, forecast_count, total_text_bytes, total_audio_bytes, latest_forecast
-        # Indices:       0,    1,              2,                3,                 4
-        city_stats = [
-            {
-                "city": row[0],
-                "forecast_count": row[1],
-                "total_text_bytes": row[2] or 0,
-                "total_audio_bytes": row[3] or 0,
-                "latest_forecast": row[4].isoformat() if row[4] else None
-            }
-            for row in cursor.fetchall()
-        ]
-
-        return {
-            "status": "success",
-            "total_forecasts": int(stats[0]) if stats[0] else 0,
-            "total_text_bytes": int(stats[1]) if stats[1] else 0,
-            "total_audio_bytes": int(stats[2]) if stats[2] else 0,
-            "encodings_used": stats[3] or {},
-            "languages_used": stats[4] or {},
-            "city_breakdown": city_stats
-        }
-
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": f"Failed to get stats: {e}"
-        }
-    finally:
-        cursor.close()
-        conn.close()
+    return {"found": True, "forecast": _parse_record(result.data[0])}
 
 
 def list_forecasts(
     city: Optional[str] = None,
-    limit: int = 10
+    language: Optional[str] = None,
+    include_expired: bool = False,
+    limit: int = 10,
+    offset: int = 0
 ) -> Dict[str, Any]:
-    """
-    List forecast history for a city.
+    client = get_supabase_client()
 
-    Args:
-        city: City name (optional, lists all if omitted)
-        limit: Maximum number of results (default: 10)
+    query = client.table("weather_forecasts").select(
+        "id, city, forecast_at, created_at, expires_at, "
+        "text_size_bytes, text_language, audio_url, image_url"
+    )
 
-    Returns:
-        Dictionary with list of forecasts
-    """
-    conn = get_connection()
-    cursor = conn.cursor()
+    if city:
+        query = query.eq("city", city.lower())
+    if language:
+        query = query.eq("text_language", language)
+    if not include_expired:
+        query = query.or_("expires_at.is.null,expires_at.gt.now()")
+
+    query = query.order("forecast_at", desc=True).range(offset, offset + limit - 1)
+    result = query.execute()
+
+    forecasts = []
+    for record in result.data:
+        is_expired = False
+        if record.get("expires_at"):
+            expires_dt = _parse_timestamp(record.get("expires_at"))
+            if expires_dt:
+                is_expired = datetime.now(timezone.utc) > expires_dt
+
+        forecasts.append({
+            "id": record.get("id"),
+            "city": record.get("city"),
+            "forecast_at": record.get("forecast_at"),
+            "created_at": record.get("created_at"),
+            "expires_at": record.get("expires_at"),
+            "is_expired": is_expired,
+            "text_language": record.get("text_language"),
+            "text_size_bytes": record.get("text_size_bytes"),
+            "has_audio": record.get("audio_url") is not None,
+            "has_image": record.get("image_url") is not None,
+        })
+
+    return {"status": "success", "forecasts": forecasts}
+
+
+def get_storage_stats() -> Dict[str, Any]:
+    client = get_supabase_client()
 
     try:
-        query = """
-            SELECT
-                id, city, forecast_at, expires_at,
-                text_size_bytes, audio_size_bytes,
-                text_encoding, text_language, text_locale,
-                created_at
-            FROM forecasts
-        """
-        params = []
-
-        if city:
-            query += " WHERE city = %s"
-            params.append(city.lower())
-
-        query += " ORDER BY forecast_at DESC LIMIT %s"
-        params.append(limit)
-
-        cursor.execute(query, params)
-
-        # Query columns: id, city, forecast_at, expires_at, text_size_bytes, audio_size_bytes,
-        #               text_encoding, text_language, text_locale, created_at
-        # Indices:      0,  1,    2,           3,          4,               5,
-        #               6,            7,             8,           9
-        forecasts = [
-            {
-                "forecast_id": str(row[0]),  # id
-                "city": row[1],  # city
-                "forecast_at": row[2].isoformat(),  # forecast_at
-                "expires_at": row[3].isoformat(),  # expires_at
-                "expired": row[3] < datetime.now(row[3].tzinfo),  # expires_at
-                "sizes": {
-                    "text": row[4],  # text_size_bytes
-                    "audio": row[5]  # audio_size_bytes
-                },
-                "encoding": row[6],  # text_encoding
-                "language": row[7],  # text_language
-                "locale": row[8],  # text_locale
-                "created_at": row[9].isoformat()  # created_at
+        result = client.rpc("get_forecast_storage_stats").execute()
+        if result.data:
+            data = result.data[0] if isinstance(result.data, list) else result.data
+            return {
+                "status": "success",
+                "total_forecasts": int(data.get("total_forecasts", 0)),
+                "total_text_bytes": int(data.get("total_text_bytes", 0)),
+                "total_audio_bytes": int(data.get("total_audio_bytes", 0)),
+                "total_image_bytes": int(data.get("total_image_bytes", 0)),
+                "forecasts_with_audio": int(data.get("forecasts_with_audio", 0)),
+                "forecasts_with_images": int(data.get("forecasts_with_images", 0)),
+                "expired_forecasts": int(data.get("expired_forecasts", 0)),
+                "cities_used": data.get("cities_used", {}) or {},
+                "languages_used": data.get("languages_used", {}) or {}
             }
-            for row in cursor.fetchall()
-        ]
+    except Exception:
+        pass
 
-        return {
-            "status": "success",
-            "count": len(forecasts),
-            "forecasts": forecasts
+    try:
+        result = client.table("weather_forecasts").select(
+            "id, text_size_bytes, audio_size_bytes, image_size_bytes, "
+            "audio_url, image_url, expires_at, city, text_language"
+        ).execute()
+
+        records = result.data
+        if not records:
+            return {
+                "status": "success",
+                "total_forecasts": 0,
+                "total_text_bytes": 0,
+                "total_audio_bytes": 0,
+                "total_image_bytes": 0,
+                "forecasts_with_audio": 0,
+                "forecasts_with_images": 0,
+                "expired_forecasts": 0,
+                "cities_used": {},
+                "languages_used": {}
+            }
+
+        now = datetime.now(timezone.utc)
+        stats = {
+            "total_forecasts": len(records),
+            "total_text_bytes": sum(r.get("text_size_bytes") or 0 for r in records),
+            "total_audio_bytes": sum(r.get("audio_size_bytes") or 0 for r in records),
+            "total_image_bytes": sum(r.get("image_size_bytes") or 0 for r in records),
+            "forecasts_with_audio": sum(1 for r in records if r.get("audio_url")),
+            "forecasts_with_images": sum(1 for r in records if r.get("image_url")),
+            "expired_forecasts": 0,
+            "cities_used": {},
+            "languages_used": {}
         }
 
+        for record in records:
+            if record.get("expires_at"):
+                exp = _parse_timestamp(record.get("expires_at"))
+                if exp and now > exp:
+                    stats["expired_forecasts"] += 1
+
+            city = record.get("city")
+            if city:
+                stats["cities_used"][city] = stats["cities_used"].get(city, 0) + 1
+
+            language = record.get("text_language")
+            if language:
+                stats["languages_used"][language] = stats["languages_used"].get(language, 0) + 1
+
+        return {"status": "success", **stats}
     except Exception as e:
-        return {
-            "status": "error",
-            "message": f"Failed to list forecasts: {e}"
-        }
-    finally:
-        cursor.close()
-        conn.close()
+        return {"status": "error", "message": f"Failed to get stats: {e}"}

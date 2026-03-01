@@ -6,18 +6,17 @@ Tests all endpoints against a running API server.
 Usage:
     python manual_test.py [BASE_URL]
 
-    BASE_URL: API server URL (default: http://localhost:8080)
+    BASE_URL: API server URL (default: http://localhost:8200)
 
 Examples:
     python manual_test.py
-    python manual_test.py http://localhost:8080
+    python manual_test.py http://localhost:8200
     python manual_test.py https://weather-api.example.com
 """
 
 import requests
 import sys
 import json
-import base64
 from datetime import datetime
 from typing import Optional
 
@@ -33,7 +32,7 @@ class Colors:
 
 
 class APITester:
-    def __init__(self, base_url: str = "http://localhost:8080"):
+    def __init__(self, base_url: str = "http://localhost:8200"):
         self.base_url = base_url.rstrip('/')
         self.passed = 0
         self.failed = 0
@@ -101,7 +100,7 @@ class APITester:
                     self.print_error(f"Service is unhealthy: {data.get('status')}")
 
                 if data.get("database", {}).get("connected"):
-                    self.print_success(f"Database connected: {data['database'].get('instance')}")
+                    self.print_success(f"Database connected: {data['database'].get('supabase_url')}")
                 else:
                     self.print_error(f"Database not connected: {data.get('database', {}).get('error')}")
 
@@ -128,14 +127,15 @@ class APITester:
                     self.print_success(f"Total forecasts: {stats.get('total_forecasts', 0)}")
                     self.print_success(f"Total text size: {stats.get('total_text_bytes', 0)} bytes")
                     self.print_success(f"Total audio size: {stats.get('total_audio_bytes', 0)} bytes")
-
-                    encodings = stats.get('encodings_used', {})
-                    if encodings:
-                        self.print_info(f"Encodings: {', '.join([f'{k}={v}' for k, v in encodings.items()])}")
+                    self.print_success(f"Total image size: {stats.get('total_image_bytes', 0)} bytes")
 
                     languages = stats.get('languages_used', {})
                     if languages:
                         self.print_info(f"Languages: {', '.join([f'{k}={v}' for k, v in languages.items()])}")
+
+                    cities = stats.get('cities_used', {})
+                    if cities:
+                        self.print_info(f"Cities: {', '.join([f'{k}={v}' for k, v in cities.items()])}")
 
                     self.print_json(data)
                 else:
@@ -170,6 +170,7 @@ class APITester:
                     self.print_info(f"Forecast time: {forecast.get('forecast_at')}")
                     self.print_info(f"Expires at: {forecast.get('expires_at')}")
                     self.print_info(f"Age: {forecast.get('age_seconds')} seconds")
+                    self.print_info(f"Expired: {forecast.get('is_expired')}")
 
                     metadata = forecast.get("metadata", {})
                     self.print_info(f"Encoding: {metadata.get('encoding')}")
@@ -177,30 +178,31 @@ class APITester:
                     self.print_info(f"Locale: {metadata.get('locale')}")
 
                     sizes = metadata.get("sizes", {})
-                    self.print_info(f"Text size: {sizes.get('text_bytes')} bytes")
-                    self.print_info(f"Audio size: {sizes.get('audio_bytes')} bytes")
+                    self.print_info(f"Text size: {sizes.get('text')} bytes")
+                    self.print_info(f"Audio size: {sizes.get('audio')} bytes")
+                    self.print_info(f"Image size: {sizes.get('image')} bytes")
 
-                    # Verify base64 audio
-                    audio_b64 = forecast.get("audio_base64")
-                    if audio_b64:
-                        try:
-                            audio_bytes = base64.b64decode(audio_b64)
-                            self.print_success(f"Audio data is valid base64 ({len(audio_bytes)} bytes)")
-                        except:
-                            self.print_error("Audio data is not valid base64")
+                    # Check audio URL
+                    audio_url = forecast.get("audio_url")
+                    if audio_url:
+                        self.print_success(f"Audio URL: {audio_url}")
+                    else:
+                        self.print_info("No audio URL available")
+
+                    # Check image URL
+                    image_url = forecast.get("image_url")
+                    if image_url:
+                        self.print_success(f"Image URL: {image_url}")
+                    else:
+                        self.print_info("No image URL available")
 
                     # Print text preview
-                    text = forecast.get("text", "")
-                    if text:
-                        preview = text[:200] + "..." if len(text) > 200 else text
-                        self.print_info(f"Text preview: {preview}")
+                    content = forecast.get("content", "")
+                    if content:
+                        preview = content[:200] + "..." if len(content) > 200 else content
+                        self.print_info(f"Content preview: {preview}")
 
-                    # Print full JSON (truncate audio for readability)
-                    display_data = data.copy()
-                    if "forecast" in display_data and "audio_base64" in display_data["forecast"]:
-                        audio_len = len(display_data["forecast"]["audio_base64"])
-                        display_data["forecast"]["audio_base64"] = f"<base64 data: {audio_len} chars>"
-                    self.print_json(display_data)
+                    self.print_json(data)
                 else:
                     self.print_error("Response missing forecast data")
 
@@ -239,9 +241,9 @@ class APITester:
                     if forecasts:
                         self.print_info(f"Showing {len(forecasts)} forecast(s):")
                         for i, fc in enumerate(forecasts[:3], 1):  # Show first 3
-                            expired = fc.get("expired", False)
-                            status = "EXPIRED" if expired else "VALID"
-                            self.print_info(f"  {i}. {fc.get('forecast_at')} - {status} - {fc.get('language')}")
+                            is_expired = fc.get("is_expired", False)
+                            status = "EXPIRED" if is_expired else "VALID"
+                            self.print_info(f"  {i}. {fc.get('forecast_at')} - {status} - {fc.get('text_language')}")
                     else:
                         self.print_info(f"No forecasts found")
 

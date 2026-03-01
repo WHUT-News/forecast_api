@@ -5,10 +5,10 @@ from fastapi import HTTPException, status
 
 
 class ForecastNotFoundError(HTTPException):
-    def __init__(self, city: str):
+    def __init__(self, message: str):
         super().__init__(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"No valid forecast found for city: {city}"
+            detail=message
         )
 
 

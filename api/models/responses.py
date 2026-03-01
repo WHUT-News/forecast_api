@@ -3,25 +3,32 @@ Pydantic response models for API endpoints.
 """
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, List
-from datetime import datetime
 
 
-# Weather Endpoint Models
 class ForecastMetadata(BaseModel):
     encoding: str
     language: Optional[str] = None
     locale: Optional[str] = None
-    sizes: Dict[str, int]
+    sizes: Dict[str, Optional[int]]
 
 
 class ForecastData(BaseModel):
-    text: str = Field(..., description="Forecast text content")
-    audio_base64: str = Field(..., description="Base64-encoded audio WAV data")
-    picture_url: Optional[str] = Field(None, description="Public URL for forecast picture")
-    forecast_at: str = Field(..., description="When forecast was made (ISO 8601)")
-    expires_at: str = Field(..., description="When forecast expires (ISO 8601)")
-    age_seconds: int = Field(..., description="Age of forecast in seconds")
+    id: str
+    city: str
+    content: str = Field(..., description="Forecast text content")
+    forecast_at: str
+    created_at: str
+    expires_at: Optional[str] = None
+    is_expired: bool
+    age_seconds: int
+    audio_url: Optional[str] = None
+    audio_format: Optional[str] = None
+    audio_size_bytes: Optional[int] = None
+    image_url: Optional[str] = None
+    image_format: Optional[str] = None
+    image_size_bytes: Optional[int] = None
     metadata: ForecastMetadata
+    record_metadata: Dict[str, Any]
 
 
 class WeatherResponse(BaseModel):
@@ -35,42 +42,36 @@ class WeatherNotFoundResponse(BaseModel):
     message: str
 
 
-# History Endpoint Models
-class HistoricalForecast(BaseModel):
-    forecast_id: str
+class ForecastSummary(BaseModel):
+    id: str
+    city: str
     forecast_at: str
-    expires_at: str
-    expired: bool
-    encoding: str
-    language: Optional[str] = None
-    locale: Optional[str] = None
-    sizes: Dict[str, int]
-    created_at: str
+    created_at: Optional[str] = None
+    expires_at: Optional[str] = None
+    is_expired: bool
+    text_language: Optional[str] = None
+    text_size_bytes: Optional[int] = None
+    has_audio: bool
+    has_image: bool
 
 
 class HistoryResponse(BaseModel):
     status: str = "success"
-    city: str
+    city: Optional[str] = None
     count: int
-    forecasts: List[HistoricalForecast]
-
-
-# Stats Endpoint Models
-class CityStatistics(BaseModel):
-    city: str
-    forecast_count: int
-    total_text_bytes: int
-    total_audio_bytes: int
-    latest_forecast: Optional[str] = None
+    forecasts: List[ForecastSummary]
 
 
 class StorageStatistics(BaseModel):
     total_forecasts: int
     total_text_bytes: int
     total_audio_bytes: int
-    encodings_used: Dict[str, int]
+    total_image_bytes: int
+    forecasts_with_audio: int
+    forecasts_with_images: int
+    expired_forecasts: int
+    cities_used: Dict[str, int]
     languages_used: Dict[str, int]
-    city_breakdown: List[CityStatistics]
 
 
 class StatsResponse(BaseModel):
@@ -78,13 +79,11 @@ class StatsResponse(BaseModel):
     statistics: StorageStatistics
 
 
-# Health Endpoint Models
 class DatabaseHealth(BaseModel):
     connected: bool
-    instance: Optional[str] = None
-    database: Optional[str] = None
-    version: Optional[str] = None
-    forecasts_table_exists: Optional[bool] = None
+    supabase_url: Optional[str] = None
+    table_exists: Optional[bool] = None
+    record_count: Optional[int] = None
     error: Optional[str] = None
 
 
@@ -95,7 +94,6 @@ class HealthResponse(BaseModel):
     api_version: str
 
 
-# Generic Error Response
 class ErrorResponse(BaseModel):
     status: str = "error"
     message: str
