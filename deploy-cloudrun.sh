@@ -23,7 +23,7 @@ if [ -z "${SUPABASE_URL}" ]; then
   exit 1
 fi
 
-SUPABASE_SERVICE_KEY="weather_forecast_supabase_service_key:latest"
+SUPABASE_SERVICE_KEY="weather_report_supabase_service_secret_key:latest"
 
 if [ -z "${WEATHER_AGENT_URL}" ]; then
   echo "Error: WEATHER_AGENT_URL environment variable is required"
