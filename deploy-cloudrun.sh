@@ -14,13 +14,17 @@ MAX_INSTANCES="${MAX_INSTANCES:-10}"
 MIN_INSTANCES="${MIN_INSTANCES:-0}"
 TIMEOUT="${TIMEOUT:-300}"
 
-CLOUD_SQL_INSTANCE="weather-forecasts"
-CLOUD_SQL_PASSWORD_SECRET="forecast_db_password:latest"
-
 # Construct full image path
 IMAGE_PATH="gcr.io/${PROJECT_ID}/${SERVICE_NAME}:${TAG}"
 
 # Required environment variables
+if [ -z "${SUPABASE_URL}" ]; then
+  echo "Error: SUPABASE_URL environment variable is required"
+  exit 1
+fi
+
+SUPABASE_SERVICE_KEY="weather_forecast_supabase_service_key:latest"
+
 if [ -z "${WEATHER_AGENT_URL}" ]; then
   echo "Error: WEATHER_AGENT_URL environment variable is required"
   exit 1
@@ -42,6 +46,7 @@ echo "CPU: ${CPU}"
 echo "Max Instances: ${MAX_INSTANCES}"
 echo "Min Instances: ${MIN_INSTANCES}"
 echo "Timeout: ${TIMEOUT}s"
+echo "Supabase URL: ${SUPABASE_URL}"
 echo "Weather Agent URL: ${WEATHER_AGENT_URL}"
 echo "================================================"
 
@@ -59,9 +64,8 @@ gcloud run deploy $SERVICE_NAME \
     --allow-unauthenticated \
     --set-env-vars "GOOGLE_CLOUD_PROJECT=${PROJECT_ID}" \
     --set-env-vars "GOOGLE_CLOUD_LOCATION=${REGION}" \
-    --set-env-vars "CLOUD_SQL_INSTANCE=${CLOUD_SQL_INSTANCE}" \
-    --set-secrets "CLOUD_SQL_PASSWORD=${CLOUD_SQL_PASSWORD_SECRET}" \
-    --add-cloudsql-instances "${PROJECT_ID}:${REGION}:${CLOUD_SQL_INSTANCE}" \
+    --set-env-vars "SUPABASE_URL=${SUPABASE_URL}" \
+    --set-secrets "SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}" \
     --set-env-vars "WEATHER_AGENT_URL=${WEATHER_AGENT_URL}"
 
 echo "================================================"

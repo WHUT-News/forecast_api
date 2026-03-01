@@ -19,10 +19,10 @@ router = APIRouter()
         503: {"description": "Service is unhealthy"}
     },
     summary="Health check",
-    description="Verifies API and database connectivity status"
+    description="Verifies API and Supabase connectivity status"
 )
 async def health_check():
-    """Health check endpoint"""
+    """Health check endpoint."""
     db_status = test_db_connection()
 
     is_healthy = db_status.get("connected", False)
@@ -32,10 +32,9 @@ async def health_check():
         "timestamp": datetime.utcnow().isoformat() + "Z",
         "database": {
             "connected": db_status.get("connected", False),
-            "instance": db_status.get("instance"),
-            "database": db_status.get("database"),
-            "version": db_status.get("version"),
-            "forecasts_table_exists": db_status.get("forecasts_table_exists"),
+            "supabase_url": db_status.get("supabase_url"),
+            "table_exists": db_status.get("table_exists"),
+            "record_count": db_status.get("record_count"),
             "error": db_status.get("error")
         },
         "api_version": settings.API_VERSION

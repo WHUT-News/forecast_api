@@ -3,8 +3,10 @@ Weather forecast endpoints.
 """
 from fastapi import APIRouter, Query, Path
 from typing import Optional
-import asyncio
+import threading
 import httpx
+import logging
+from datetime import datetime
 
 from api.models.responses import (
     WeatherResponse,
@@ -14,10 +16,7 @@ from api.models.responses import (
 )
 from core.database import get_cached_forecast, list_forecasts
 from core.exceptions import ForecastNotFoundError, DatabaseConnectionError
-from datetime import datetime
 from config import settings
-
-import logging
 
 # Configure logging
 logging.basicConfig(
@@ -28,7 +27,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-def trigger_forecast_preparation(city: str, language: Optional[str] = None):
+
+def trigger_forecast_preparation(city: str, language: Optional[str] = None) -> None:
     """
     Trigger async forecast preparation using Weather Agent API.
 
@@ -41,23 +41,19 @@ def trigger_forecast_preparation(city: str, language: Optional[str] = None):
         return
 
     try:
-        # Create session and send message synchronously (fire and forget)
-        import threading
-
         def make_api_calls():
             try:
-                # Generate unique session ID with timestamp
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 session_id = f"forecast_api_{city}_{language or 'en-US'}_{timestamp}"
                 user_id = "forecast_api"
 
-                # Create prompt for forecast generation
                 language_spec = f" in {language}" if language else ""
                 prompt = f"What is the current weather condition in {city}{language_spec}"
 
-                with httpx.Client(timeout=30.0) as client:
-                    # Step 1: Create a session
-                    session_url = f"{settings.WEATHER_AGENT_URL}/apps/weather_agent/users/{user_id}/sessions/{session_id}"
+                with httpx.Client(timeout=60.0) as client:
+                    session_url = (
+                        f"{settings.WEATHER_AGENT_URL}/apps/weather_agent/users/{user_id}/sessions/{session_id}"
+                    )
                     session_response = client.post(
                         session_url,
                         headers={"Content-Type": "application/json"},
@@ -66,7 +62,6 @@ def trigger_forecast_preparation(city: str, language: Optional[str] = None):
                     session_response.raise_for_status()
                     logger.info(f"Created session {session_id} for {city}")
 
-                    # Step 2: Send a message
                     message_url = f"{settings.WEATHER_AGENT_URL}/run_sse"
                     message_payload = {
                         "appName": "weather_agent",
@@ -93,12 +88,10 @@ def trigger_forecast_preparation(city: str, language: Optional[str] = None):
             except Exception as e:
                 logger.warning(f"Failed to trigger forecast for {city}: {str(e)}")
 
-        # Run in background thread (fire and forget)
         thread = threading.Thread(target=make_api_calls, daemon=True)
         thread.start()
 
     except Exception as e:
-        # Log error but don't fail the request
         logger.warning(f"Failed to start forecast preparation for {city}: {str(e)}")
 
 
@@ -107,7 +100,7 @@ def trigger_forecast_preparation(city: str, language: Optional[str] = None):
     response_model=WeatherResponse,
     responses={
         200: {"description": "Successful response with forecast data"},
-        404: {"model": WeatherNotFoundResponse, "description": "Forecast not found"},
+        404: {"model": WeatherNotFoundResponse, "description": "Forecast not found - preparation triggered"},
         503: {"model": ErrorResponse, "description": "Database connection error"}
     },
     summary="Get latest forecast for a city",
@@ -115,49 +108,30 @@ def trigger_forecast_preparation(city: str, language: Optional[str] = None):
 )
 async def get_latest_forecast(
     city: str = Path(..., description="City name (case-insensitive)"),
-    language: Optional[str] = Query(None, description="ISO 639-1 language code filter")
+    language: Optional[str] = Query(None, description="ISO 639-1 language code filter"),
+    include_expired: bool = Query(False, description="Include expired forecasts")
 ):
-    """Get the latest forecast for a city"""
+    """Get the latest forecast for a city."""
     try:
-        result = get_cached_forecast(city, language)
+        result = get_cached_forecast(city, language, include_expired)
 
-        if result.get("status") == "error":
-            raise DatabaseConnectionError(result.get("message", "Database error"))
-
-        if not result.get("cached"):
-            raise ForecastNotFoundError(city)
+        if not result.get("found"):
+            logger.info(f"No forecast found for {city}, triggering preparation")
+            trigger_forecast_preparation(city, language)
+            raise ForecastNotFoundError(
+                f"Forecast for {city} is being prepared. Please try again shortly."
+            )
 
         return {
             "status": "success",
             "city": city.lower(),
-            "forecast": {
-                "text": result["forecast_text"],
-                "audio_base64": result["audio_data"],
-                "picture_url": result.get("picture_url"),
-                "forecast_at": result["forecast_at"],
-                "expires_at": result["expires_at"],
-                "age_seconds": result["age_seconds"],
-                "metadata": {
-                    "encoding": result["encoding"],
-                    "language": result.get("language"),
-                    "locale": result.get("locale"),
-                    "sizes": result["sizes"]
-                }
-            }
+            "forecast": result["forecast"]
         }
-    except ForecastNotFoundError as e:
-        # Trigger async forecast preparation when forecast not found (non-blocking)
-        logger.warning(f"triggering forecast preparation for {city}: {str(e)}")
-        trigger_forecast_preparation(city, language)
-
-        # Still raise the original error
-        raise
-    except DatabaseConnectionError:
+    except ForecastNotFoundError:
         raise
     except Exception as e:
-        # Log unexpected errors but don't mask their type
         logger.error(f"Unexpected error in get_latest_forecast: {str(e)}", exc_info=True)
-        raise
+        raise DatabaseConnectionError(f"Database error: {str(e)}")
 
 
 @router.get(
@@ -172,29 +146,26 @@ async def get_latest_forecast(
 )
 async def get_forecast_history(
     city: str = Path(..., description="City name"),
+    language: Optional[str] = Query(None, description="ISO 639-1 language code filter"),
     limit: int = Query(10, ge=1, le=100, description="Maximum number of results"),
+    offset: int = Query(0, ge=0, description="Results offset for pagination"),
     include_expired: bool = Query(False, description="Include expired forecasts")
 ):
-    """Get forecast history for a city"""
+    """Get forecast history for a city."""
     try:
-        result = list_forecasts(city=city, limit=limit)
-
-        if result.get("status") == "error":
-            raise DatabaseConnectionError(result.get("message", "Database error"))
-
-        forecasts = result.get("forecasts", [])
-
-        # Filter expired if requested
-        if not include_expired:
-            forecasts = [f for f in forecasts if not f.get("expired", False)]
+        result = list_forecasts(
+            city=city,
+            language=language,
+            include_expired=include_expired,
+            limit=limit,
+            offset=offset
+        )
 
         return {
             "status": "success",
             "city": city.lower(),
-            "count": len(forecasts),
-            "forecasts": forecasts
+            "count": len(result.get("forecasts", [])),
+            "forecasts": result.get("forecasts", [])
         }
-    except DatabaseConnectionError:
-        raise
     except Exception as e:
-        raise DatabaseConnectionError(f"Unexpected error: {str(e)}")
+        raise DatabaseConnectionError(f"Database error: {str(e)}")

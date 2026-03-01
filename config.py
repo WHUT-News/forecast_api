@@ -3,7 +3,6 @@ Configuration management for FastAPI server.
 Loads settings from environment variables with validation.
 """
 from pydantic_settings import BaseSettings
-from typing import Optional
 
 
 class Settings(BaseSettings):
@@ -22,13 +21,9 @@ class Settings(BaseSettings):
     CORS_ALLOW_METHODS: list[str] = ["GET", "OPTIONS"]
     CORS_ALLOW_HEADERS: list[str] = ["*"]
 
-    # Cloud SQL Configuration
-    GOOGLE_CLOUD_PROJECT: str
-    GOOGLE_CLOUD_LOCATION: str = "us-central1"
-    CLOUD_SQL_INSTANCE: str = "weather-forecasts"
-    CLOUD_SQL_DB: str = "weather"
-    CLOUD_SQL_USER: str = "postgres"
-    CLOUD_SQL_PASSWORD: str
+    # Supabase Configuration
+    SUPABASE_URL: str
+    SUPABASE_SERVICE_KEY: str
 
     # Weather Agent URL Configuration
     WEATHER_AGENT_URL: str = "http://127.0.0.1:8200"

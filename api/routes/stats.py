@@ -11,17 +11,17 @@ router = APIRouter()
 
 
 @router.get(
-    "/",
+    "",
     response_model=StatsResponse,
     responses={
         200: {"description": "Successful response with storage statistics"},
         503: {"model": ErrorResponse, "description": "Database connection error"}
     },
     summary="Get storage statistics",
-    description="Retrieves database storage statistics including forecast counts and sizes"
+    description="Retrieves database storage statistics for weather forecasts"
 )
 async def get_stats():
-    """Get storage statistics"""
+    """Get storage statistics."""
     try:
         result = get_storage_stats()
 
@@ -34,9 +34,12 @@ async def get_stats():
                 "total_forecasts": result["total_forecasts"],
                 "total_text_bytes": result["total_text_bytes"],
                 "total_audio_bytes": result["total_audio_bytes"],
-                "encodings_used": result["encodings_used"],
-                "languages_used": result["languages_used"],
-                "city_breakdown": result["city_breakdown"]
+                "total_image_bytes": result["total_image_bytes"],
+                "forecasts_with_audio": result["forecasts_with_audio"],
+                "forecasts_with_images": result["forecasts_with_images"],
+                "expired_forecasts": result["expired_forecasts"],
+                "cities_used": result["cities_used"],
+                "languages_used": result["languages_used"]
             }
         }
     except DatabaseConnectionError:

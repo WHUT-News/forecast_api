@@ -4,6 +4,7 @@ FastAPI application entry point for Weather Forecast API.
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -21,18 +22,16 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup and shutdown events"""
-    # Startup
+    """Startup and shutdown events."""
     logger.info("Starting Weather Forecast API")
     conn_status = test_db_connection()
-    if conn_status["connected"]:
-        logger.info(f"Database connected: {conn_status['instance']}")
+    if conn_status.get("connected"):
+        logger.info("Supabase connected")
     else:
         logger.error(f"Database connection failed: {conn_status.get('error')}")
 
     yield
 
-    # Shutdown
     logger.info("Shutting down Weather Forecast API")
     cleanup_db_connection()
 

@@ -1,140 +1,67 @@
 """
-Cloud SQL connection management.
-
-Provides secure connections to Google Cloud SQL PostgreSQL using
-the Cloud SQL Python Connector with IAM authentication support.
+Supabase connection management.
 """
-
 from typing import Optional
-from google.cloud.sql.connector import Connector
+from supabase import create_client, Client
 
 from config import settings
 
-# Build instance connection name
-if settings.GOOGLE_CLOUD_PROJECT and settings.GOOGLE_CLOUD_LOCATION and settings.CLOUD_SQL_INSTANCE:
-    INSTANCE_CONNECTION_NAME = f"{settings.GOOGLE_CLOUD_PROJECT}:{settings.GOOGLE_CLOUD_LOCATION}:{settings.CLOUD_SQL_INSTANCE}"
-else:
-    INSTANCE_CONNECTION_NAME = None
-
-# Global connector instance (initialized on first use)
-_connector: Optional[Connector] = None
+_supabase_client: Optional[Client] = None
 
 
-def get_connector() -> Connector:
-    """
-    Get or create the global Cloud SQL connector instance.
+def get_supabase_client() -> Client:
+    """Get or create the Supabase client instance."""
+    global _supabase_client
 
-    Returns:
-        Connector instance
-    """
-    global _connector
-    if _connector is None:
-        _connector = Connector()
-    return _connector
+    if _supabase_client is not None:
+        return _supabase_client
 
+    if not settings.SUPABASE_URL:
+        raise ValueError("SUPABASE_URL environment variable is required")
+    if not settings.SUPABASE_SERVICE_KEY:
+        raise ValueError("SUPABASE_SERVICE_KEY environment variable is required")
 
-def get_connection():
-    """
-    Get a connection to Cloud SQL PostgreSQL using pg8000.
+    _supabase_client = create_client(
+        settings.SUPABASE_URL,
+        settings.SUPABASE_SERVICE_KEY
+    )
 
-    Returns a raw pg8000 DB-API connection suitable for reading/writing binary data (BYTEA columns).
-
-    Returns:
-        pg8000 connection object
-
-    Raises:
-        ValueError: If required environment variables are not set
-        Exception: If connection fails
-
-    Example:
-        >>> conn = get_connection()
-        >>> cursor = conn.cursor()
-        >>> cursor.execute("SELECT * FROM forecasts")
-        >>> results = cursor.fetchall()
-        >>> conn.close()
-    """
-    if not INSTANCE_CONNECTION_NAME:
-        raise ValueError(
-            "Missing required Cloud SQL configuration. "
-            "Please set GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION, and CLOUD_SQL_INSTANCE "
-            "environment variables."
-        )
-
-    if not settings.CLOUD_SQL_PASSWORD:
-        raise ValueError(
-            "Missing CLOUD_SQL_PASSWORD environment variable. "
-            "Please set the database password."
-        )
-
-    connector = get_connector()
-
-    try:
-        conn = connector.connect(
-            INSTANCE_CONNECTION_NAME,
-            "pg8000",
-            user=settings.CLOUD_SQL_USER,
-            password=settings.CLOUD_SQL_PASSWORD,
-            db=settings.CLOUD_SQL_DB
-        )
-        return conn
-    except Exception as e:
-        raise Exception(
-            f"Failed to connect to Cloud SQL instance {INSTANCE_CONNECTION_NAME}: {e}"
-        )
+    return _supabase_client
 
 
-def close_connector():
-    """
-    Close the global connector and cleanup resources.
-
-    Should be called when shutting down the application.
-    """
-    global _connector
-    if _connector:
-        _connector.close()
-        _connector = None
+def reset_client() -> None:
+    """Reset the global Supabase client instance."""
+    global _supabase_client
+    _supabase_client = None
 
 
 def test_connection() -> dict:
-    """
-    Test the database connection and return status.
-
-    Returns:
-        Dictionary with connection status and details
-    """
+    """Test Supabase connection by querying the weather_forecasts table."""
     try:
-        conn = get_connection()
-        cursor = conn.cursor()
-
-        # Test query
-        cursor.execute("SELECT version()")
-        result = cursor.fetchone()
-        version = result[0] if result else "Unknown"
-
-        # Check if forecasts table exists
-        cursor.execute("""
-            SELECT EXISTS (
-                SELECT FROM information_schema.tables
-                WHERE table_name = 'forecasts'
-            )
-        """)
-        table_exists = cursor.fetchone()[0]
-
-        cursor.close()
-        conn.close()
+        client = get_supabase_client()
+        result = client.table("weather_forecasts").select("id", count="exact").limit(1).execute()
 
         return {
-            "status": "success",
             "connected": True,
-            "instance": INSTANCE_CONNECTION_NAME,
-            "database": settings.CLOUD_SQL_DB,
-            "version": version,
-            "forecasts_table_exists": table_exists
+            "supabase_url": settings.SUPABASE_URL,
+            "table_exists": True,
+            "record_count": result.count if result.count is not None else 0
         }
     except Exception as e:
+        error_msg = str(e)
+        if "does not exist" in error_msg.lower() or "relation" in error_msg.lower():
+            return {
+                "connected": True,
+                "supabase_url": settings.SUPABASE_URL,
+                "table_exists": False,
+                "record_count": 0,
+                "error": "weather_forecasts table does not exist. Run schema.sql."
+            }
+
         return {
-            "status": "error",
             "connected": False,
-            "error": str(e),
-            "instance": INSTANCE_CONNECTION_NAME or "Not configured"
+            "supabase_url": settings.SUPABASE_URL,
+            "table_exists": False,
+            "record_count": 0,
+            "error": error_msg
         }
